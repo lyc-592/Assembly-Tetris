@@ -1,0 +1,793 @@
+Microsoft (R) Macro Assembler Version 14.44.35211.0	    12/04/25 16:27:17
+tetris.asm						     Page 1 - 1
+
+
+				; =========================================================================
+				; Tetris Final Fixed Version
+				; 1. 修复旋转逻辑 Bug (保存新角度)
+				; 2. 包含之前所有的 Unicode/正方形/防抖修复
+				; =========================================================================
+
+				.386
+				.model flat, stdcall
+				option casemap:none
+
+				; --- 链接库 ---
+				includelib D:\masm32\lib\kernel32.lib
+				includelib D:\masm32\lib\user32.lib
+				includelib D:\masm32\lib\msvcrt.lib
+
+				; --- 结构体 ---
+ 00000008			SMALL_RECT STRUCT
+ 00000000  0000			  Left      WORD ?
+ 00000002  0000			  Top       WORD ?
+ 00000004  0000			  Right     WORD ?
+ 00000006  0000			  Bottom    WORD ?
+				SMALL_RECT ENDS
+
+ 00000004			COORD STRUCT
+ 00000000  0000			  X WORD ?
+ 00000002  0000			  Y WORD ?
+				COORD ENDS
+
+ 00000002			CHAR_INFO_UNION UNION
+ 00000000  0000			  UnicodeChar WORD ?
+				  AsciiChar   BYTE ?
+				CHAR_INFO_UNION ENDS
+
+ 00000004			CHAR_INFO STRUCT
+ 00000000  0000			  Char       CHAR_INFO_UNION <>
+ 00000002  0000			  Attributes WORD ?
+				CHAR_INFO ENDS
+
+				; --- 函数原型 ---
+				ExitProcess         PROTO :DWORD
+				Sleep               PROTO :DWORD
+				GetStdHandle        PROTO :DWORD
+				SetConsoleTitleA    PROTO :DWORD
+				GetTickCount        PROTO
+				GetAsyncKeyState    PROTO :DWORD
+				WriteConsoleOutputW PROTO :DWORD, :DWORD, :DWORD, :DWORD, :DWORD
+
+				rand        PROTO C
+				srand       PROTO C :DWORD
+				wsprintfA   PROTO C :DWORD, :VARARG
+
+				; --- 常量 ---
+ =-0000000B			STD_OUTPUT_HANDLE equ -11
+ = 00000025			VK_LEFT           equ 25h
+ = 00000026			VK_UP             equ 26h
+ = 00000027			VK_RIGHT          equ 27h
+ = 00000028			VK_DOWN           equ 28h
+ = 0000001B			VK_ESCAPE         equ 1Bh
+
+				; 游戏参数
+ = 0000000C			BOARD_WIDTH     equ 12
+ = 00000016			BOARD_HEIGHT    equ 22
+ = 0000003C			SCREEN_WIDTH    equ 60
+ = 0000001E			SCREEN_HEIGHT   equ 30
+
+ 00000000			.data
+ 00000000 54 65 74 72 69	    szTitle         db "Tetris Final Fixed", 0
+	   73 20 46 69 6E
+	   61 6C 20 46 69
+	   78 65 64 00
+ 00000013 53 63 6F 72 65	    szScoreFmt      db "Score: %d", 0
+	   3A 20 25 64 00
+				    
+ 0000001D 00000000		    hStdOut         DWORD ?
+ 00000021 00000001		    bGameRunning    DWORD 1
+ 00000025 00000000		    dwTimer         DWORD 0
+ 00000029 0000000A		    nSpeed          DWORD 10
+ 0000002D 00000000		    nScore          DWORD 0
+
+ 00000031 00000000		    nCurrentPiece   DWORD 0
+ 00000035 00000000		    nCurrentRot     DWORD 0
+ 00000039 00000000		    nPieceX         DWORD 0
+ 0000003D 00000000		    nPieceY         DWORD 0
+
+ 00000041 00000000		    bRotateHeld     DWORD 0 
+
+ 00000045  00000108 [		    Board           BYTE BOARD_WIDTH * BOARD_HEIGHT dup(0)
+	    00
+	   ]
+
+				    ; 方块定义
+ 0000014D 00 00 01 00 00	    Tetrominoes     BYTE 0,0,1,0, 0,0,1,0, 0,0,1,0, 0,0,1,0
+	   00 01 00 00 00
+	   01 00 00 00 01
+	   00
+ 0000015D  00 00 00 00 01	                    BYTE 0,0,0,0, 1,1,1,1, 0,0,0,0, 0,0,0,0
+	   01 01 01 00 00
+	   00 00 00 00 00
+	   00
+ 0000016D  00 00 01 00 00	                    BYTE 0,0,1,0, 0,0,1,0, 0,0,1,0, 0,0,1,0
+	   00 01 00 00 00
+	   01 00 00 00 01
+	   00
+ 0000017D  00 00 00 00 01	                    BYTE 0,0,0,0, 1,1,1,1, 0,0,0,0, 0,0,0,0
+	   01 01 01 00 00
+	   00 00 00 00 00
+	   00
+				                    
+ 0000018D 00 01 01 00 00	    Tetrominoes_1   BYTE 0,1,1,0, 0,1,1,0, 0,0,0,0, 0,0,0,0
+	   01 01 00 00 00
+	   00 00 00 00 00
+	   00
+ 0000019D  00 01 01 00 00	                    BYTE 0,1,1,0, 0,1,1,0, 0,0,0,0, 0,0,0,0
+	   01 01 00 00 00
+	   00 00 00 00 00
+	   00
+ 000001AD  00 01 01 00 00	                    BYTE 0,1,1,0, 0,1,1,0, 0,0,0,0, 0,0,0,0
+	   01 01 00 00 00
+	   00 00 00 00 00
+	   00
+ 000001BD  00 01 01 00 00	                    BYTE 0,1,1,0, 0,1,1,0, 0,0,0,0, 0,0,0,0
+	   01 01 00 00 00
+	   00 00 00 00 00
+	   00
+				                    
+ 000001CD 00 01 00 00 01	    Tetrominoes_2   BYTE 0,1,0,0, 1,1,1,0, 0,0,0,0, 0,0,0,0
+	   01 01 00 00 00
+	   00 00 00 00 00
+	   00
+ 000001DD  00 01 00 00 00	                    BYTE 0,1,0,0, 0,1,1,0, 0,1,0,0, 0,0,0,0
+	   01 01 00 00 01
+	   00 00 00 00 00
+	   00
+ 000001ED  00 00 00 00 01	                    BYTE 0,0,0,0, 1,1,1,0, 0,1,0,0, 0,0,0,0
+	   01 01 00 00 01
+	   00 00 00 00 00
+	   00
+ 000001FD  00 01 00 00 01	                    BYTE 0,1,0,0, 1,1,0,0, 0,1,0,0, 0,0,0,0
+	   01 00 00 00 01
+	   00 00 00 00 00
+	   00
+				                    
+ 0000020D 00 01 01 00 01	    Tetrominoes_3   BYTE 0,1,1,0, 1,1,0,0, 0,0,0,0, 0,0,0,0
+	   01 00 00 00 00
+	   00 00 00 00 00
+	   00
+ 0000021D  00 01 00 00 00	                    BYTE 0,1,0,0, 0,1,1,0, 0,0,1,0, 0,0,0,0
+	   01 01 00 00 00
+	   01 00 00 00 00
+	   00
+ 0000022D  00 01 01 00 01	                    BYTE 0,1,1,0, 1,1,0,0, 0,0,0,0, 0,0,0,0
+	   01 00 00 00 00
+	   00 00 00 00 00
+	   00
+ 0000023D  00 01 00 00 00	                    BYTE 0,1,0,0, 0,1,1,0, 0,0,1,0, 0,0,0,0
+	   01 01 00 00 00
+	   01 00 00 00 00
+	   00
+				                    
+ 0000024D 01 01 00 00 00	    Tetrominoes_4   BYTE 1,1,0,0, 0,1,1,0, 0,0,0,0, 0,0,0,0
+	   01 01 00 00 00
+	   00 00 00 00 00
+	   00
+ 0000025D  00 00 01 00 00	                    BYTE 0,0,1,0, 0,1,1,0, 0,1,0,0, 0,0,0,0
+	   01 01 00 00 01
+	   00 00 00 00 00
+	   00
+ 0000026D  01 01 00 00 00	                    BYTE 1,1,0,0, 0,1,1,0, 0,0,0,0, 0,0,0,0
+	   01 01 00 00 00
+	   00 00 00 00 00
+	   00
+ 0000027D  00 00 01 00 00	                    BYTE 0,0,1,0, 0,1,1,0, 0,1,0,0, 0,0,0,0
+	   01 01 00 00 01
+	   00 00 00 00 00
+	   00
+				                    
+ 0000028D 00 01 00 00 00	    Tetrominoes_5   BYTE 0,1,0,0, 0,1,0,0, 1,1,0,0, 0,0,0,0
+	   01 00 00 01 01
+	   00 00 00 00 00
+	   00
+ 0000029D  01 00 00 00 01	                    BYTE 1,0,0,0, 1,1,1,0, 0,0,0,0, 0,0,0,0
+	   01 01 00 00 00
+	   00 00 00 00 00
+	   00
+ 000002AD  00 01 01 00 00	                    BYTE 0,1,1,0, 0,1,0,0, 0,1,0,0, 0,0,0,0
+	   01 00 00 00 01
+	   00 00 00 00 00
+	   00
+ 000002BD  00 00 00 00 01	                    BYTE 0,0,0,0, 1,1,1,0, 0,0,1,0, 0,0,0,0
+	   01 01 00 00 00
+	   01 00 00 00 00
+	   00
+				                    
+ 000002CD 00 01 00 00 00	    Tetrominoes_6   BYTE 0,1,0,0, 0,1,0,0, 0,1,1,0, 0,0,0,0
+	   01 00 00 00 01
+	   01 00 00 00 00
+	   00
+ 000002DD  00 00 00 00 01	                    BYTE 0,0,0,0, 1,1,1,0, 1,0,0,0, 0,0,0,0
+	   01 01 00 01 00
+	   00 00 00 00 00
+	   00
+ 000002ED  01 01 00 00 00	                    BYTE 1,1,0,0, 0,1,0,0, 0,1,0,0, 0,0,0,0
+	   01 00 00 00 01
+	   00 00 00 00 00
+	   00
+ 000002FD  00 00 01 00 01	                    BYTE 0,0,1,0, 1,1,1,0, 0,0,0,0, 0,0,0,0
+	   01 01 00 00 00
+	   00 00 00 00 00
+	   00
+
+ 0000030D 0000014D R		    pShapes         DWORD offset Tetrominoes, offset Tetrominoes_1, offset Tetrominoes_2, offset Tetrominoes_3
+	   0000018D R
+	   000001CD R
+	   0000020D R
+ 0000031D  0000024D R		                    DWORD offset Tetrominoes_4, offset Tetrominoes_5, offset Tetrominoes_6
+	   0000028D R
+	   000002CD R
+
+ 00000329 0000 0000 003B	    rectWindow      SMALL_RECT <0, 0, SCREEN_WIDTH-1, SCREEN_HEIGHT-1>
+	   001D
+ 00000331 003C 001E		    coordBufferSize COORD <SCREEN_WIDTH, SCREEN_HEIGHT>
+ 00000335 0000 0000		    coordZero       COORD <0, 0>
+ 00000339  00000708 [		    lpScreenBuffer  CHAR_INFO SCREEN_WIDTH * SCREEN_HEIGHT dup(<>)
+	    0000 0000
+	   ]
+ 00001F59  00000020 [		    szScoreBuffer   BYTE 32 dup(0)
+	    00
+	   ]
+
+ 00000000			.code
+
+ 00000000			GetRandom proc range:DWORD
+				    invoke rand
+ 00000008  99			    cdq
+ 00000009  8B 4D 08		    mov ecx, range
+ 0000000C  F7 F9		    idiv ecx
+ 0000000E  8B C2		    mov eax, edx
+				    ret
+ 00000014			GetRandom endp
+
+ 00000014			CheckCollision proc nPX:DWORD, nPY:DWORD, nPiece:DWORD, nRot:DWORD
+				    LOCAL i:DWORD, px:DWORD, py:DWORD
+				    
+ 0000001A  8B 45 10		    mov eax, nPiece
+ 0000001D  8B 14 85		    mov edx, [pShapes + eax*4]
+	   0000030D R
+ 00000024  8B 45 14		    mov eax, nRot
+ 00000027  C1 E0 04		    shl eax, 4
+ 0000002A  03 D0		    add edx, eax
+
+ 0000002C  C7 45 FC		    mov i, 0
+	   00000000
+				    .WHILE i < 16
+ 00000035  8B 45 FC		        mov eax, i
+ 00000038  8A 0C 02		        mov cl, byte ptr [edx + eax]
+				        .IF cl != 0
+ 0000003F  8B 45 FC		            mov eax, i
+ 00000042  83 E0 03		            and eax, 3
+ 00000045  03 45 08		            add eax, nPX
+ 00000048  89 45 F8		            mov px, eax
+ 0000004B  8B 45 FC		            mov eax, i
+ 0000004E  C1 E8 02		            shr eax, 2
+ 00000051  03 45 0C		            add eax, nPY
+ 00000054  89 45 F4		            mov py, eax
+ 00000057  8B 45 F4		            mov eax, py
+ 0000005A  6B C0 0C		            imul eax, BOARD_WIDTH
+ 0000005D  03 45 F8		            add eax, px
+ 00000060  8A 88 00000045 R	            mov cl, byte ptr [Board + eax]
+				            .IF cl != 0
+ 0000006A  B8 00000001		                mov eax, 1
+				                ret
+				            .ENDIF
+				        .ENDIF
+ 00000073  FF 45 FC		        inc i
+				    .ENDW
+ 0000007C  B8 00000000		    mov eax, 0
+				    ret
+ 00000085			CheckCollision endp
+
+ 00000085			LockPiece proc
+				    LOCAL i:DWORD, px:DWORD, py:DWORD
+				    
+ 0000008B  A1 00000031 R	    mov eax, nCurrentPiece
+ 00000090  8B 14 85		    mov edx, [pShapes + eax*4]
+	   0000030D R
+ 00000097  A1 00000035 R	    mov eax, nCurrentRot
+ 0000009C  C1 E0 04		    shl eax, 4
+ 0000009F  03 D0		    add edx, eax
+
+ 000000A1  C7 45 FC		    mov i, 0
+	   00000000
+				    .WHILE i < 16
+ 000000AA  8B 45 FC		        mov eax, i
+ 000000AD  8A 0C 02		        mov cl, byte ptr [edx + eax]
+				        .IF cl != 0
+ 000000B4  8B 45 FC		            mov eax, i
+ 000000B7  83 E0 03		            and eax, 3
+ 000000BA  03 05 00000039 R	            add eax, nPieceX
+ 000000C0  89 45 F8		            mov px, eax
+ 000000C3  8B 45 FC		            mov eax, i
+ 000000C6  C1 E8 02		            shr eax, 2
+ 000000C9  03 05 0000003D R	            add eax, nPieceY
+ 000000CF  89 45 F4		            mov py, eax
+ 000000D2  8B 45 F4		            mov eax, py
+ 000000D5  6B C0 0C		            imul eax, BOARD_WIDTH
+ 000000D8  03 45 F8		            add eax, px
+ 000000DB  B3 01		            mov bl, 1
+ 000000DD  88 98 00000045 R	            mov byte ptr [Board + eax], bl
+				        .ENDIF
+ 000000E3  FF 45 FC		        inc i
+				    .ENDW
+				    ret
+ 000000EE			LockPiece endp
+
+ 000000EE			RemoveLines proc
+				    LOCAL y:DWORD, x:DWORD, bLineFull:BYTE
+
+ 000000F4  C7 45 FC		    mov y, BOARD_HEIGHT - 2 
+	   00000014
+				    .WHILE y > 0
+ 000000FD  C6 45 F7 01		        mov bLineFull, 1
+ 00000101  C7 45 F8		        mov x, 1
+	   00000001
+				        .WHILE x < BOARD_WIDTH - 1
+ 0000010A  8B 45 FC		            mov eax, y
+ 0000010D  6B C0 0C		            imul eax, BOARD_WIDTH
+ 00000110  03 45 F8		            add eax, x
+ 00000113  8A 88 00000045 R	            mov cl, byte ptr [Board + eax]
+				            .IF cl == 0
+ 0000011D  C6 45 F7 00		                mov bLineFull, 0
+				                .BREAK
+				            .ENDIF
+ 00000123  FF 45 F8		            inc x
+				        .ENDW
+
+				        .IF bLineFull == 1
+ 00000132  83 05 0000002D R	            add nScore, 100
+	   64
+ 00000139  8B 4D FC		            mov ecx, y
+				            .WHILE ecx > 0
+ 0000013E  C7 45 F8		                mov x, 1
+	   00000001
+				                .WHILE x < BOARD_WIDTH - 1
+ 00000147  8B C1		                    mov eax, ecx
+ 00000149  48			                    dec eax
+ 0000014A  6B C0 0C		                    imul eax, BOARD_WIDTH
+ 0000014D  03 45 F8		                    add eax, x
+ 00000150  8A 98 00000045 R	                    mov bl, byte ptr [Board + eax]
+ 00000156  8B C1		                    mov eax, ecx
+ 00000158  6B C0 0C		                    imul eax, BOARD_WIDTH
+ 0000015B  03 45 F8		                    add eax, x
+ 0000015E  88 98 00000045 R	                    mov byte ptr [Board + eax], bl
+ 00000164  FF 45 F8		                    inc x
+				                .ENDW
+ 0000016D  49			                dec ecx
+				            .ENDW
+				        .ELSE
+ 00000175  FF 4D FC		            dec y
+				        .ENDIF
+				    .ENDW
+				    ret
+ 00000184			RemoveLines endp
+
+ 00000184			SpawnPiece proc
+				    invoke GetRandom, 7
+ 0000018B  A3 00000031 R	    mov nCurrentPiece, eax
+ 00000190  C7 05 00000035 R	    mov nCurrentRot, 0
+	   00000000
+ 0000019A  C7 05 00000039 R	    mov nPieceX, 4
+	   00000004
+ 000001A4  C7 05 0000003D R	    mov nPieceY, 0
+	   00000000
+				    invoke CheckCollision, nPieceX, nPieceY, nCurrentPiece, nCurrentRot
+				    .IF eax == 1
+ 000001D0  C7 05 00000021 R	        mov bGameRunning, 0 
+	   00000000
+				    .ENDIF
+ 000001DA  C3			    ret
+ 000001DB			SpawnPiece endp
+
+ 000001DB			InitBoard proc
+				    LOCAL x:DWORD, y:DWORD
+ 000001E1  C7 45 F8		    mov y, 0
+	   00000000
+				    .WHILE y < BOARD_HEIGHT
+ 000001EA  C7 45 FC		        mov x, 0
+	   00000000
+				        .WHILE x < BOARD_WIDTH
+				            .IF x == 0 || x == BOARD_WIDTH - 1 || y == BOARD_HEIGHT - 1
+ 00000205  8B 45 F8		                mov eax, y
+ 00000208  6B C0 0C		                imul eax, BOARD_WIDTH
+ 0000020B  03 45 FC		                add eax, x
+ 0000020E  C6 80 00000045 R	                mov byte ptr [Board + eax], 9 
+	   09
+				            .ENDIF
+ 00000215  FF 45 FC		            inc x
+				        .ENDW
+ 0000021E  FF 45 F8		        inc y
+				    .ENDW
+				    ret
+ 00000229			InitBoard endp
+
+				; ==========================================================
+				; ProcessInput 关键修复：正确保存和恢复旋转角度
+				; ==========================================================
+ 00000229			ProcessInput proc
+				    invoke GetAsyncKeyState, VK_RIGHT
+				    .IF eax != 0
+ 00000234  A1 00000039 R	        mov eax, nPieceX
+ 00000239  40			        inc eax
+				        invoke CheckCollision, eax, nPieceY, nCurrentPiece, nCurrentRot
+				        .IF eax == 0
+ 00000256  FF 05 00000039 R	            inc nPieceX
+				        .ENDIF
+				    .ENDIF
+
+				    invoke GetAsyncKeyState, VK_LEFT
+				    .IF eax != 0
+ 00000267  A1 00000039 R	        mov eax, nPieceX
+ 0000026C  48			        dec eax
+				        invoke CheckCollision, eax, nPieceY, nCurrentPiece, nCurrentRot
+				        .IF eax == 0
+ 00000289  FF 0D 00000039 R	            dec nPieceX
+				        .ENDIF
+				    .ENDIF
+
+				    invoke GetAsyncKeyState, VK_DOWN
+				    .IF eax != 0
+ 0000029A  A1 0000003D R	        mov eax, nPieceY
+ 0000029F  40			        inc eax
+				        invoke CheckCollision, nPieceX, eax, nCurrentPiece, nCurrentRot
+				        .IF eax == 0
+ 000002BC  FF 05 0000003D R	            inc nPieceY
+				        .ENDIF
+				    .ENDIF
+
+				    ; --- 旋转逻辑 (修复版) ---
+				    invoke GetAsyncKeyState, VK_UP
+ 000002C9  A9 00008000		    test eax, 8000h
+ 000002CE  74 42		    jz KeyUp
+				    
+ 000002D0  83 3D 00000041 R	        cmp bRotateHeld, 1
+	   01
+ 000002D7  74 43		        je DoneRotate
+
+				        ; 1. 计算新角度
+ 000002D9  A1 00000035 R	        mov eax, nCurrentRot
+ 000002DE  40			        inc eax
+ 000002DF  83 E0 03		        and eax, 3
+				        
+				        ; 2. !!! 关键：将新角度压入堆栈保存 !!!
+ 000002E2  50			        push eax 
+				        
+				        ; 3. 调用检测 (EAX作为参数传入)
+				        invoke CheckCollision, nPieceX, nPieceY, nCurrentPiece, eax
+				        
+				        ; 4. !!! 关键：将新角度从堆栈弹出到 EDX (因为 EAX 已经被覆盖了) !!!
+ 000002FB  5A			        pop edx 
+				        
+				        ; 5. 如果 EAX (返回值) == 0，则更新角度为 EDX (保存的新角度)
+				        .IF eax == 0
+ 00000300  89 15 00000035 R	             mov nCurrentRot, edx
+				        .ENDIF
+				        
+ 00000306  C7 05 00000041 R	        mov bRotateHeld, 1
+	   00000001
+ 00000310  EB 0A		        jmp DoneRotate
+
+ 00000312			    KeyUp:
+ 00000312  C7 05 00000041 R	        mov bRotateHeld, 0
+	   00000000
+				        
+ 0000031C			    DoneRotate:
+				    
+				    invoke GetAsyncKeyState, VK_ESCAPE
+				    .IF eax != 0
+ 00000327  C7 05 00000021 R	        mov bGameRunning, 0
+	   00000000
+				    .ENDIF
+ 00000331  C3			    ret
+ 00000332			ProcessInput endp
+
+ 00000332			DrawGame proc
+				    LOCAL i:DWORD, x:DWORD, y:DWORD, boardVal:BYTE
+				    LOCAL charCode:WORD, attr:WORD
+
+ 00000338  B9 00000708		    mov ecx, SCREEN_WIDTH * SCREEN_HEIGHT
+ 0000033D  BE 00000339 R	    mov esi, offset lpScreenBuffer
+				    .WHILE ecx > 0
+ 00000344  66| C7 06 0020	        mov word ptr [esi], 20h
+ 00000349  66| C7 46 02		        mov word ptr [esi+2], 07h
+	   0007
+ 0000034F  83 C6 04		        add esi, 4
+ 00000352  49			        dec ecx
+				    .ENDW
+
+ 00000358  C7 45 F4		    mov y, 0
+	   00000000
+				    .WHILE y < BOARD_HEIGHT
+ 00000364  C7 45 F8		        mov x, 0
+	   00000000
+				        .WHILE x < BOARD_WIDTH
+ 00000370  8B 45 F4		            mov eax, y
+ 00000373  6B C0 0C		            imul eax, BOARD_WIDTH
+ 00000376  03 45 F8		            add eax, x
+ 00000379  8A 88 00000045 R	            mov cl, byte ptr [Board + eax]
+ 0000037F  88 4D F3		            mov boardVal, cl
+				            
+				            .IF boardVal == 0
+ 00000388  66| C7 45 F0		                mov charCode, 20h
+	   0020
+ 0000038E  66| C7 45 EE		                mov attr, 0
+	   0000
+				            .ELSEIF boardVal == 9
+ 0000039C  66| C7 45 F0		                mov charCode, 23h
+	   0023
+ 000003A2  66| C7 45 EE		                mov attr, 08h
+	   0008
+				            .ELSE
+ 000003AA  66| C7 45 F0		                mov charCode, 2588h
+	   2588
+ 000003B0  66| C7 45 EE		                mov attr, 0Fh
+	   000F
+				            .ENDIF
+				            
+ 000003B6  8B 45 F4		            mov eax, y
+ 000003B9  83 C0 02		            add eax, 2
+ 000003BC  6B C0 3C		            imul eax, SCREEN_WIDTH
+				            
+ 000003BF  8B 5D F8		            mov ebx, x
+ 000003C2  D1 E3		            shl ebx, 1
+ 000003C4  83 C3 02		            add ebx, 2
+				            
+ 000003C7  03 C3		            add eax, ebx
+ 000003C9  C1 E0 02		            shl eax, 2
+				            
+ 000003CC  BE 00000339 R	            mov esi, offset lpScreenBuffer
+ 000003D1  03 F0		            add esi, eax
+				            
+ 000003D3  66| 8B 45 F0		            mov ax, charCode
+ 000003D7  66| 89 06		            mov word ptr [esi], ax
+ 000003DA  66| 8B 45 EE		            mov ax, attr
+ 000003DE  66| 89 46 02		            mov word ptr [esi+2], ax
+ 000003E2  66| 8B 45 F0		            mov ax, charCode
+ 000003E6  66| 89 46 04		            mov word ptr [esi+4], ax
+ 000003EA  66| 8B 45 EE		            mov ax, attr
+ 000003EE  66| 89 46 06		            mov word ptr [esi+6], ax
+				            
+ 000003F2  FF 45 F8		            inc x
+				        .ENDW
+ 000003FF  FF 45 F4		        inc y
+				    .ENDW
+
+ 0000040C  A1 00000031 R	    mov eax, nCurrentPiece
+ 00000411  8B 14 85		    mov edx, [pShapes + eax*4]
+	   0000030D R
+ 00000418  A1 00000035 R	    mov eax, nCurrentRot
+ 0000041D  C1 E0 04		    shl eax, 4
+ 00000420  03 D0		    add edx, eax
+
+ 00000422  C7 45 FC		    mov i, 0
+	   00000000
+				    .WHILE i < 16
+ 0000042B  8B 45 FC		        mov eax, i
+ 0000042E  8A 0C 02		        mov cl, byte ptr [edx + eax]
+				        .IF cl != 0
+ 00000435  8B 45 FC		            mov eax, i
+ 00000438  83 E0 03		            and eax, 3
+ 0000043B  03 05 00000039 R	            add eax, nPieceX
+ 00000441  8B D8		            mov ebx, eax
+ 00000443  8B 45 FC		            mov eax, i
+ 00000446  C1 E8 02		            shr eax, 2
+ 00000449  03 05 0000003D R	            add eax, nPieceY
+				            
+ 0000044F  83 C0 02		            add eax, 2
+ 00000452  6B C0 3C		            imul eax, SCREEN_WIDTH
+				            
+ 00000455  D1 E3		            shl ebx, 1
+ 00000457  83 C3 02		            add ebx, 2
+				            
+ 0000045A  03 C3		            add eax, ebx
+ 0000045C  C1 E0 02		            shl eax, 2
+				            
+ 0000045F  BE 00000339 R	            mov esi, offset lpScreenBuffer
+ 00000464  03 F0		            add esi, eax
+				            
+ 00000466  66| C7 06 2588	            mov word ptr [esi], 2588h
+ 0000046B  66| C7 46 02		            mov word ptr [esi+2], 0Eh
+	   000E
+ 00000471  66| C7 46 04		            mov word ptr [esi+4], 2588h
+	   2588
+ 00000477  66| C7 46 06		            mov word ptr [esi+6], 0Eh
+	   000E
+				        .ENDIF
+ 0000047D  FF 45 FC		        inc i
+				    .ENDW
+				    
+				    invoke wsprintfA, addr szScoreBuffer, addr szScoreFmt, nScore
+ 0000049E  BE 00001F59 R	    mov esi, offset szScoreBuffer
+ 000004A3  BF 00000339 R	    mov edi, offset lpScreenBuffer
+ 000004A8  81 C7 00000528	    add edi, ((5 * SCREEN_WIDTH) + 30) * 4
+				    .WHILE byte ptr [esi] != 0
+ 000004B0  8A 06		        mov al, [esi]
+ 000004B2  88 07		        mov byte ptr [edi], al
+ 000004B4  66| C7 47 02		        mov word ptr [edi+2], 0Fh
+	   000F
+ 000004BA  46			        inc esi
+ 000004BB  83 C7 04		        add edi, 4
+				    .ENDW
+				    
+				    invoke WriteConsoleOutputW, hStdOut, addr lpScreenBuffer, 
+				           DWORD PTR coordBufferSize, 
+				           DWORD PTR coordZero, 
+				           addr rectWindow
+				    
+				    ret
+ 000004E6			DrawGame endp
+
+ 000004E6			main proc
+				    invoke GetTickCount
+				    invoke srand, eax
+				    invoke GetStdHandle, STD_OUTPUT_HANDLE
+ 000004FB  A3 0000001D R	    mov hStdOut, eax
+				    invoke SetConsoleTitleA, addr szTitle
+				    invoke InitBoard
+				    invoke SpawnPiece
+
+				    .WHILE bGameRunning != 0
+				        invoke Sleep, 50
+ 0000051D  FF 05 00000025 R	        inc dwTimer
+				        invoke ProcessInput
+ 00000528  A1 00000029 R	        mov eax, nSpeed
+				        .IF dwTimer >= eax
+ 00000535  C7 05 00000025 R	            mov dwTimer, 0
+	   00000000
+ 0000053F  A1 0000003D R	            mov eax, nPieceY
+ 00000544  40			            inc eax
+				            invoke CheckCollision, nPieceX, eax, nCurrentPiece, nCurrentRot
+				            .IF eax == 0
+ 00000561  FF 05 0000003D R	                inc nPieceY
+				            .ELSE
+				                invoke LockPiece
+				                invoke RemoveLines
+				                invoke SpawnPiece
+				            .ENDIF
+				        .ENDIF
+				        invoke DrawGame
+				    .ENDW
+				    invoke ExitProcess, 0
+ 0000058D			main endp
+
+				end main
+Microsoft (R) Macro Assembler Version 14.44.35211.0	    12/04/25 16:27:17
+tetris.asm						     Symbols 2 - 1
+
+
+
+
+Structures and Unions:
+
+                N a m e                  Size
+                                         Offset      Type
+
+CHAR_INFO_UNION  . . . . . . . .	 00000002
+  UnicodeChar  . . . . . . . . .	 00000000	 Word
+  AsciiChar  . . . . . . . . . .	 00000000	 Byte
+CHAR_INFO  . . . . . . . . . . .	 00000004
+  Char . . . . . . . . . . . . .	 00000000	 Word
+  Attributes . . . . . . . . . .	 00000002	 Word
+COORD  . . . . . . . . . . . . .	 00000004
+  X  . . . . . . . . . . . . . .	 00000000	 Word
+  Y  . . . . . . . . . . . . . .	 00000002	 Word
+SMALL_RECT . . . . . . . . . . .	 00000008
+  Left . . . . . . . . . . . . .	 00000000	 Word
+  Top  . . . . . . . . . . . . .	 00000002	 Word
+  Right  . . . . . . . . . . . .	 00000004	 Word
+  Bottom . . . . . . . . . . . .	 00000006	 Word
+
+
+Segments and Groups:
+
+                N a m e                 Size     Length   Align   Combine Class
+
+FLAT . . . . . . . . . . . . . .	GROUP
+_DATA  . . . . . . . . . . . . .	32 Bit	 00001F79 DWord	  Public  'DATA'	
+_TEXT  . . . . . . . . . . . . .	32 Bit	 0000058D DWord	  Public  'CODE'	
+
+
+Procedures, parameters, and locals:
+
+                N a m e                 Type     Value    Attr
+
+CheckCollision . . . . . . . . .	P Near	 00000014 _TEXT	Length= 00000071 Public STDCALL
+  nPX  . . . . . . . . . . . . .	DWord	 bp + 00000008
+  nPY  . . . . . . . . . . . . .	DWord	 bp + 0000000C
+  nPiece . . . . . . . . . . . .	DWord	 bp + 00000010
+  nRot . . . . . . . . . . . . .	DWord	 bp + 00000014
+  i  . . . . . . . . . . . . . .	DWord	 bp - 00000004
+  px . . . . . . . . . . . . . .	DWord	 bp - 00000008
+  py . . . . . . . . . . . . . .	DWord	 bp - 0000000C
+DrawGame . . . . . . . . . . . .	P Near	 00000332 _TEXT	Length= 000001B4 Public STDCALL
+  i  . . . . . . . . . . . . . .	DWord	 bp - 00000004
+  x  . . . . . . . . . . . . . .	DWord	 bp - 00000008
+  y  . . . . . . . . . . . . . .	DWord	 bp - 0000000C
+  boardVal . . . . . . . . . . .	Byte	 bp - 0000000D
+  charCode . . . . . . . . . . .	Word	 bp - 00000010
+  attr . . . . . . . . . . . . .	Word	 bp - 00000012
+ExitProcess  . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+GetAsyncKeyState . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+GetRandom  . . . . . . . . . . .	P Near	 00000000 _TEXT	Length= 00000014 Public STDCALL
+  range  . . . . . . . . . . . .	DWord	 bp + 00000008
+GetStdHandle . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+GetTickCount . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+InitBoard  . . . . . . . . . . .	P Near	 000001DB _TEXT	Length= 0000004E Public STDCALL
+  x  . . . . . . . . . . . . . .	DWord	 bp - 00000004
+  y  . . . . . . . . . . . . . .	DWord	 bp - 00000008
+LockPiece  . . . . . . . . . . .	P Near	 00000085 _TEXT	Length= 00000069 Public STDCALL
+  i  . . . . . . . . . . . . . .	DWord	 bp - 00000004
+  px . . . . . . . . . . . . . .	DWord	 bp - 00000008
+  py . . . . . . . . . . . . . .	DWord	 bp - 0000000C
+ProcessInput . . . . . . . . . .	P Near	 00000229 _TEXT	Length= 00000109 Public STDCALL
+  KeyUp  . . . . . . . . . . . .	L Near	 00000312 _TEXT	
+  DoneRotate . . . . . . . . . .	L Near	 0000031C _TEXT	
+RemoveLines  . . . . . . . . . .	P Near	 000000EE _TEXT	Length= 00000096 Public STDCALL
+  y  . . . . . . . . . . . . . .	DWord	 bp - 00000004
+  x  . . . . . . . . . . . . . .	DWord	 bp - 00000008
+  bLineFull  . . . . . . . . . .	Byte	 bp - 00000009
+SetConsoleTitleA . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+Sleep  . . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+SpawnPiece . . . . . . . . . . .	P Near	 00000184 _TEXT	Length= 00000057 Public STDCALL
+WriteConsoleOutputW  . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+main . . . . . . . . . . . . . .	P Near	 000004E6 _TEXT	Length= 000000A7 Public STDCALL
+rand . . . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External C
+srand  . . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External C
+wsprintfA  . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External C
+
+
+Symbols:
+
+                N a m e                 Type     Value    Attr
+
+@CodeSize  . . . . . . . . . . .	Number	 00000000h   
+@DataSize  . . . . . . . . . . .	Number	 00000000h   
+@Interface . . . . . . . . . . .	Number	 00000003h   
+@Model . . . . . . . . . . . . .	Number	 00000007h   
+@code  . . . . . . . . . . . . .	Text   	 _TEXT
+@data  . . . . . . . . . . . . .	Text   	 FLAT
+@fardata?  . . . . . . . . . . .	Text   	 FLAT
+@fardata . . . . . . . . . . . .	Text   	 FLAT
+@stack . . . . . . . . . . . . .	Text   	 FLAT
+BOARD_HEIGHT . . . . . . . . . .	Number	 00000016h   
+BOARD_WIDTH  . . . . . . . . . .	Number	 0000000Ch   
+Board  . . . . . . . . . . . . .	Byte	 00000045 _DATA	
+SCREEN_HEIGHT  . . . . . . . . .	Number	 0000001Eh   
+SCREEN_WIDTH . . . . . . . . . .	Number	 0000003Ch   
+STD_OUTPUT_HANDLE  . . . . . . .	Number	 -0000000Bh   
+Tetrominoes_1  . . . . . . . . .	Byte	 0000018D _DATA	
+Tetrominoes_2  . . . . . . . . .	Byte	 000001CD _DATA	
+Tetrominoes_3  . . . . . . . . .	Byte	 0000020D _DATA	
+Tetrominoes_4  . . . . . . . . .	Byte	 0000024D _DATA	
+Tetrominoes_5  . . . . . . . . .	Byte	 0000028D _DATA	
+Tetrominoes_6  . . . . . . . . .	Byte	 000002CD _DATA	
+Tetrominoes  . . . . . . . . . .	Byte	 0000014D _DATA	
+VK_DOWN  . . . . . . . . . . . .	Number	 00000028h   
+VK_ESCAPE  . . . . . . . . . . .	Number	 0000001Bh   
+VK_LEFT  . . . . . . . . . . . .	Number	 00000025h   
+VK_RIGHT . . . . . . . . . . . .	Number	 00000027h   
+VK_UP  . . . . . . . . . . . . .	Number	 00000026h   
+bGameRunning . . . . . . . . . .	DWord	 00000021 _DATA	
+bRotateHeld  . . . . . . . . . .	DWord	 00000041 _DATA	
+coordBufferSize  . . . . . . . .	COORD	 00000331 _DATA	
+coordZero  . . . . . . . . . . .	COORD	 00000335 _DATA	
+dwTimer  . . . . . . . . . . . .	DWord	 00000025 _DATA	
+hStdOut  . . . . . . . . . . . .	DWord	 0000001D _DATA	
+lpScreenBuffer . . . . . . . . .	CHAR_INFO  00000339 _DATA	
+nCurrentPiece  . . . . . . . . .	DWord	 00000031 _DATA	
+nCurrentRot  . . . . . . . . . .	DWord	 00000035 _DATA	
+nPieceX  . . . . . . . . . . . .	DWord	 00000039 _DATA	
+nPieceY  . . . . . . . . . . . .	DWord	 0000003D _DATA	
+nScore . . . . . . . . . . . . .	DWord	 0000002D _DATA	
+nSpeed . . . . . . . . . . . . .	DWord	 00000029 _DATA	
+pShapes  . . . . . . . . . . . .	DWord	 0000030D _DATA	
+rectWindow . . . . . . . . . . .	SMALL_RECT  00000329 _DATA	
+szScoreBuffer  . . . . . . . . .	Byte	 00001F59 _DATA	
+szScoreFmt . . . . . . . . . . .	Byte	 00000013 _DATA	
+szTitle  . . . . . . . . . . . .	Byte	 00000000 _DATA	
+
+	   0 Warnings
+	   0 Errors

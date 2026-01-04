@@ -1,0 +1,5 @@
+﻿  Assembling main.asm...
+main.asm(1): error A2008: syntax error : .
+main.asm(2): error A2008: syntax error : .
+main.asm(9): fatal error A1000: cannot open file : msvcrt.inc
+D:\Download App\Visual Studio\Visual Studio 2022\Community\MSBuild\Microsoft\VC\v170\BuildCustomizations\masm.targets(70,5): error MSB3721: 命令“ml64.exe /c /nologo /Zi /Fo"x64\Debug\main.obj" /W3 /errorReport:prompt  /Tamain.asm”已退出，返回代码为 1。
